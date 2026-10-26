@@ -1,0 +1,5 @@
+-r base.txt
+torch==2.13.0
+torchvision==0.28.0
+transformers==5.11.0
+accelerate==1.15.0

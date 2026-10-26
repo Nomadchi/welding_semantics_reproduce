@@ -1,0 +1,5 @@
+-r base.txt
+vllm==0.19.1
+torch==2.10.0
+transformers==5.11.0
+qwen-vl-utils==0.0.14
