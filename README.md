@@ -2,8 +2,6 @@
 
 统一焊接视频的语义测试方法：**共享 Prompt、视频解码、抽帧索引、时间戳与结果字段**，通过模型适配器分别接入 Code-as-World、Cosmos3-Nano Reasoner、RoBoBrain2.5 和 Responses 兼容的多图 API。
 
-本仓库从既有 `repro` 服务器脚本抽取公共逻辑，去除了对历史回答、历史输入审计、固定四条视频及下载记录的依赖。只发布测试框架及本 README；实验文档、结论、权重、原始视频、结果网页与原始回答均不提交。PhysMind/SAM3 的专项分割实验不属于这里的五层语义推理入口。
-
 ## 目录
 
 ```text
@@ -16,17 +14,10 @@ welding_bench/
   runner.py              统一运行入口
   validation.py          输入来源与 JSON 结构核验
 scripts/
-  test/                  提交：准备输入、推理、发送 API、核验与输入对比
-  download/              不提交：下载、断点续传等内部运维脚本
+  test/                  准备输入、推理、发送 API、核验与输入对比
 requirements/            CPU、Transformers、vLLM 分开的依赖
 tests/                   临时合成输入与模拟 API 的回归测试
-inputs/                  不提交：按测试生成的输入与 manifest
-outputs/                 不提交：请求、原始响应、审计及解析结果
-weights/                 不提交：自行准备的模型与处理器文件
-upstream/                不提交：所需的上游模板等外部文件
 ```
-
-`scripts/download/` 被 Git 整目录忽略，克隆仓库后不存在是正常现象。框架不自动下载权重，也不要求下载脚本生成的专用 manifest。所有模型路径通过 `--weights` 指定，原实验目录不需要搬动。
 
 ## 统一协议
 
@@ -35,10 +26,10 @@ upstream/                不提交：所需的上游模板等外部文件
 3. 时间戳为 `实际帧索引 / fps`，时长为 `声明帧数 / fps`。这是基于容器 FPS 的等时间间隔假设；可变帧率视频应先统一帧率，否则此协议不保证真实 PTS 时间。
 4. system 固定为 `You are a careful visual observer. Separate evidence from hypotheses. Respond with JSON only.`。任务使用原 `schema_fields_only` 协议，即五层字段列表加 `Duration: ... seconds.`；不向模型提供文件名、视频 ID、参考答案或会话历史。
 5. 五层为 geometry、physical、process、temporal、intent_quality，共 34 个字段，另有 evidence_notes。未测量量保持未知，候选工艺与观察分开；这些是任务要求，并非后处理强制填写的答案。
-6. 本地模型默认 `max_tokens=3072`、seed=1、贪心生成；API 可显式选择推理强度及更大预算。不同预算要作为不同实验条件保留，不能宣称完全等预算。
+6. 本地模型默认 `max_tokens=3072`、seed=1、贪心生成；API 可显式选择推理强度及更大预算。
 7. 全部输入和模型适配后的输入审计先固定，再开始该次运行的推理。保留完整原文；解析只允许移除完整 `<think>...</think>` 和最外层代码围栏，不补 JSON、不补字段、不把 null 改成 false/0。
 
-**统一时序输入不等于统一模型内部处理。**以下差异会进入 `input_audit.json` 和 `protocol.json`：
+统一时序输入不等于统一模型内部处理：
 
 | 后端 | 模型实际接收的媒体 | 空间预处理与文本模板 |
 |---|---|---|
@@ -134,14 +125,6 @@ PowerShell 使用 `$env:WELDING_API_KEY = '<在本机配置>'`。密钥不写入
 
 推理强度由目标服务支持范围决定；脚本不自动将不支持的强度降级。`32768` 是请求值，响应没有确认时不能认定代理实际执行了该上限。API 预算包含推理 token，与本地模型的生成预算不能简单等同。
 
-每次尝试保存 `attempt_XXX.json`、原始 `attempt_XXX.sse` 以及完整响应。默认不自动重试。调用再次运行时跳过所有已有完整回答，包括 JSON 解析失败或被截断的回答；仅经人工检查通信失败后，显式执行：
-
-```bash
-python scripts/test/send_api.py --output outputs/astra-max-v1 --retry-transport-errors
-```
-
-失败尝试及部分文本保持原样。进程中断而没有完成记录也属于“是否完成未知”，必须显式确认重试；上游可能因此重复计算。不能将通信重试次数当成独立样本，也不能通过重跑低质量答案选优。
-
 ## 4. 核验与比较
 
 ```bash
@@ -161,11 +144,8 @@ python -m unittest discover -s tests -v
 - `<case_id>/input_audit.json`：公共时序信息、媒体预处理、张量/图像哈希和提示词。
 - `<case_id>/raw_response.json` 或 API 响应文件：可追溯的原始模型输出。
 - `<case_id>/input_montage.jpg`：实际预处理输入的展示拼图。
-
-模型身份记录的是本地路径和配置哈希，**本框架未逐字节校验完整权重**；有严格版本要求时，应在外部完成权重校验并保留相应记录。生成参数固定也不保证跨 GPU、库版本或 API 服务完全确定性。
+  
 
 ## 扩展与提交边界
 
-新增模型只在适配器中实现空间预处理、模型加载和生成，复用 `sampling.py`、`prompt.py` 与输入 manifest。修改 Prompt、抽帧、像素处理或预算必须创建新输出目录，保留旧协议。不要为了适配模型而读取其他模型答案或回填语义值。
-
-新增内容提交前检查 `git diff --cached --stat` 和 `git ls-files`。`.gitignore` 排除下载脚本、文档目录、权重、媒体、实验数据、报告及凭据；请勿使用 `git add -f` 绕过这些规则。这里唯一的项目说明文件是本 README，测试不携带已有焊接视频或实验结论。
+新增模型只在适配器中实现空间预处理、模型加载和生成，复用 `sampling.py`、`prompt.py` 与输入 manifest。
