@@ -3,6 +3,16 @@
 scripts/download/
 inputs/
 outputs/
+results/
+web/
+archives/
+*.xlsx
+requirements-cpu.txt
+requirements-remote.lock.txt
+schemas/
+scripts/*
+!scripts/test/
+!scripts/test/**
 logs/
 weights/
 video_samples/

@@ -9,13 +9,14 @@ from .adapters import Adapter
 from .api import execute_frozen
 from .common import file_sha, parse_answer, read, save, source_hashes, utc
 from .sampling import load_cases
+from .workspace import new_run_path, model_slug
 
 
 def parser():
     p = argparse.ArgumentParser(description='Run one frozen semantic protocol with a selected model adapter.')
     p.add_argument('--inputs', type=Path, required=True)
-    p.add_argument('--output', type=Path, required=True)
-    p.add_argument('--backend', choices=['codeasworlds', 'cosmos3', 'robobrain', 'responses'], required=True)
+    p.add_argument('--output', type=Path, help='Existing directory for --resume; otherwise defaults to results/<model>_<Beijing time>')
+    p.add_argument('--backend', choices=['codeasworlds', 'cosmos3', 'robobrain', 'rynnbrain', 'qwen38', 'responses'], required=True)
     p.add_argument('--weights', type=Path, required=True, help='Local model directory; API uses only its reference processor')
     p.add_argument('--frames', type=int, nargs='+', default=[16, 64])
     p.add_argument('--max-tokens', type=int, default=3072, help='Explicitly pass 32768 for the larger API budget')
@@ -32,6 +33,8 @@ def parser():
     p.add_argument('--context', type=int, default=16384)
     p.add_argument('--gpu-memory-utilization', type=float, default=0.88)
     p.add_argument('--gpu-memory-gib', type=int, default=20)
+    p.add_argument('--qwen-thinking', action='store_true', help='Qwen3.8 only: enable thinking; default is direct answers for the shared baseline')
+    p.add_argument('--qwen-reasoning-effort', choices=['low','medium','xhigh'], default='xhigh')
     return p
 
 
@@ -43,10 +46,20 @@ def settings(args):
     value['chat_template'] = str(args.chat_template.resolve()) if args.chat_template else None
     value['seed'] = None if args.backend == 'responses' else 1
     value['temperature'] = None if args.backend == 'responses' else 0
+    if args.backend == 'rynnbrain':
+        value.update(model='Alibaba-DAMO-Academy/RynnBrain1.1-9B', enable_thinking=False,
+                     reasoning_effort=None, engine='transformers', cuda_visible_devices=os.getenv('CUDA_VISIBLE_DEVICES'),
+                     generation_config='official checkpoint defaults; greedy, seed=1, explicit max_tokens')
+    if args.backend == 'qwen38':
+        value['model'] = 'Qwen/Qwen3.8-27B'
+        value['enable_thinking'] = args.qwen_thinking
+        value['reasoning_effort'] = args.qwen_reasoning_effort if args.qwen_thinking else None
+        value['engine'] = 'vllm'
+        value['generation_config'] = 'vllm defaults; greedy, seed=1, no repetition/presence/frequency penalties'
     return value
 
 
-def run(args):
+def _run(args):
     if args.max_tokens <= 0 or args.tp <= 0 or args.context <= 0 or args.timeout <= 0:
         raise ValueError('Budgets, timeout and device counts must be positive')
     if len(set(args.frames)) != len(args.frames):
@@ -157,3 +170,31 @@ def run(args):
 
 def main():
     run(parser().parse_args())
+
+
+def run(args):
+    if args.resume and args.output is None:
+        raise ValueError('--resume requires the exact existing --output directory')
+    if args.output is None:
+        args.output = new_run_path(args)
+    if args.output.exists() and not args.resume:
+        raise FileExistsError('Use a new experiment directory: '+str(args.output))
+    print('EXPERIMENT_DIRECTORY', args.output.resolve(), flush=True)
+    started = utc()
+    error = None
+    try:
+        return _run(args)
+    except Exception as exc:
+        error = f'{type(exc).__name__}: {exc}'
+        raise
+    finally:
+        out = args.output.resolve()
+        if out.is_dir():
+            meta = read(out/'experiment.json') if (out/'experiment.json').exists() else {
+                'model': model_slug(args), 'time': started, 'time_source': 'runner start',
+                'timezone': 'Asia/Shanghai', 'kind': 'semantic', 'frames': args.frames}
+            state = read(out/'run.json') if (out/'run.json').exists() else {}
+            meta.update(status='failed' if error else state.get('status','prepared'),
+                        result_count=len(state.get('results',[])))
+            if error:meta['last_error']=error
+            save(out/'experiment.json',meta)
